@@ -1,13 +1,14 @@
 {
-  "Plugin-Class": "org.example.ExamplePlugin",
+  "Plugin-Class": "garlicrot.autoamethyst.AutoAmethystPlugin",
   "Name": "${project.plugin_name}",
   "Version": "${project.plugin_version}",
-  "Description": "Example rusherhack plugin",
-  "URL": "https://github.com/RusherDevelopment/example-plugin",
-  "Authors": [
-    "John200410"
-  ],
+  "Description": "Automatically farms amethyst shards by breaking buds/clusters without breaking Budding Amethyst.",
+  "URL": "https://github.com/GarlicRot/AutoAmethyst",
+  "Authors": ["GarlicRot"],
   "Minecraft-Versions": [
-    "${project.minecraft_version}"
+    "1.20.6",
+    "1.21.1",
+    "1.21.3",
+    "1.21.4"
   ]
 }
