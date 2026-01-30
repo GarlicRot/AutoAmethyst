@@ -1,0 +1,124 @@
+name: Build and Release AutoAmethyst
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build AutoAmethyst
+    runs-on: ubuntu-24.04
+    outputs:
+      new_version: ${{ steps.version.outputs.new_version }}
+      new_tag: ${{ steps.version.outputs.new_tag }}
+
+    steps:
+      - name: Check out main branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      - name: Determine next version + tag
+        id: version
+        run: |
+          git fetch --tags --force
+
+          latest_tag=$(git describe --tags "$(git rev-list --tags --max-count=1)" 2>/dev/null || echo "v0.0.0")
+
+          if [ "$latest_tag" = "v0.0.0" ]; then
+            new_version="1.0.0"
+          else
+            version=${latest_tag#v}
+            IFS='.' read -r major minor patch <<< "$version"
+            new_patch=$((patch + 1))
+            new_version="$major.$minor.$new_patch"
+          fi
+
+          new_tag="v$new_version"
+
+          echo "new_version=$new_version" >> $GITHUB_OUTPUT
+          echo "new_tag=$new_tag" >> $GITHUB_OUTPUT
+
+      - name: Setup JDK (Java 17)
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+          cache: "gradle"
+
+      - name: Validate Gradle Wrapper
+        uses: gradle/wrapper-validation-action@v1
+
+      - name: Build Plugin
+        run: ./gradlew build
+
+      - name: Locate built jar
+        id: jar
+        run: |
+          echo "Listing JAR files in build/libs:"
+          ls -l build/libs || true
+
+          jar_file=$(ls build/libs/*.jar 2>/dev/null | head -n 1)
+          if [ -z "$jar_file" ]; then
+            echo "No JAR produced in build/libs"
+            exit 1
+          fi
+
+          echo "jar_file=$jar_file" >> $GITHUB_OUTPUT
+
+      - name: Rename jar for release
+        run: |
+          mkdir -p dist
+          cp "${{ steps.jar.outputs.jar_file }}" "dist/AutoAmethyst-${{ steps.version.outputs.new_version }}.jar"
+          ls -l dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AutoAmethyst
+          path: dist/AutoAmethyst-${{ steps.version.outputs.new_version }}.jar
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository (for tagging)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: AutoAmethyst
+          path: dist
+
+      - name: Create and push tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git fetch --tags --force
+          tag="${{ needs.build.outputs.new_tag }}"
+
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "Tag already exists: $tag"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag "$tag"
+            git push origin "$tag"
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.build.outputs.new_tag }}
+          name: AutoAmethyst ${{ needs.build.outputs.new_tag }}
+          files: dist/AutoAmethyst-${{ needs.build.outputs.new_version }}.jar
