@@ -5,9 +5,6 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
 import net.minecraft.world.InteractionHand;
-import net.minecraft.world.item.Item;
-import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.item.Items;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.block.AmethystClusterBlock;
 import net.minecraft.world.level.block.Block;
@@ -26,6 +23,7 @@ import org.rusherhack.client.api.setting.ColorSetting;
 import org.rusherhack.core.event.stage.Stage;
 import org.rusherhack.core.event.subscribe.Subscribe;
 import org.rusherhack.core.setting.BooleanSetting;
+import org.rusherhack.core.setting.EnumSetting;
 import org.rusherhack.core.setting.NumberSetting;
 import org.rusherhack.core.utils.ColorUtils;
 
@@ -40,25 +38,16 @@ public class AutoAmethystModule extends ToggleableModule {
 
     private static final double VANILLA_REACH = 4.5;
 
-    private final NumberSetting<Integer> range =
-            new NumberSetting<>("Range", "Scan radius around you.", 6, 1, 12)
-                    .incremental(1);
+    private static final int SCAN_RANGE = 12;
 
-    private final BooleanSetting requirePickaxe =
-            new BooleanSetting("Require Pickaxe", "Only run if you're holding a pickaxe.", true);
+    private static final int FAIL_COOLDOWN_TICKS = 4;
 
-    private final NumberSetting<Integer> retryCooldownTicks =
-            new NumberSetting<>("Retry Cooldown", "Ticks before retrying the same target.", 4, 0, 20)
-                    .incremental(1);
+    private static final int VERIFY_AFTER_TICKS = 2;
 
-    private final BooleanSetting requireLineOfSight =
-            new BooleanSetting("Line of Sight", "Only break if you have clear line-of-sight.", true);
+    private static final int MAX_FAILURE_STREAK = 3;
 
-    private final BooleanSetting swing =
-            new BooleanSetting("Swing", "Swing hand when breaking (visual).", true);
-
-    private final BooleanSetting render =
-            new BooleanSetting("Render", "Render budding + targets.", true);
+    private final EnumSetting<BreakStage> breakSetting =
+            new EnumSetting<>("Break", "Which growth stage(s) to break.", BreakStage.ALL);
 
     private final ColorSetting buddingColor =
             new ColorSetting("Budding Color", new Color(170, 60, 255, 60))
@@ -71,13 +60,34 @@ public class AutoAmethystModule extends ToggleableModule {
                     .setThemeSyncAllowed(true);
 
     private final NumberSetting<Float> lineWidth =
-            new NumberSetting<>("Line Width", 1.0f, 0.0f, 5.0f)
+            new NumberSetting<>("Line Width", "Outline width.", 1.0f, 0.0f, 5.0f)
                     .incremental(0.25f);
+
+    private final BooleanSetting renderSettings =
+            new BooleanSetting("Render", "Render budding + targets.", true);
+
+    private final NumberSetting<Integer> retryCooldownTicks =
+            new NumberSetting<>("Retry Cooldown", "Ticks before retrying the same target.", 4, 0, 20)
+                    .incremental(1);
+
+    private final BooleanSetting swing =
+            new BooleanSetting("Swing", "Swing hand when breaking (visual).", true);
 
     private final List<BlockPos> buddingCache = new ArrayList<>();
     private final List<BlockPos> targets = new ArrayList<>();
+
     private final Map<BlockPos, Integer> cooldowns = new HashMap<>();
+
+    private final Map<BlockPos, Integer> failureStreak = new HashMap<>();
+
     private int tickCounter = 0;
+
+    private BlockPos miningPos = null;
+    private Direction miningDir = null;
+    private int miningStartTick = 0;
+
+    private BlockPos verifyPos = null;
+    private int verifyTick = 0;
 
     private AutoAmethystModule() {
         super(
@@ -86,16 +96,17 @@ public class AutoAmethystModule extends ToggleableModule {
                 ModuleCategory.MISC
         );
 
-        this.registerSettings(
-                range,
-                requirePickaxe,
-                retryCooldownTicks,
-                requireLineOfSight,
-                swing,
-                render,
+        renderSettings.addSubSettings(
                 buddingColor,
                 targetColor,
                 lineWidth
+        );
+
+        this.registerSettings(
+                breakSetting,
+                renderSettings,
+                retryCooldownTicks,
+                swing
         );
     }
 
@@ -109,6 +120,9 @@ public class AutoAmethystModule extends ToggleableModule {
         buddingCache.clear();
         targets.clear();
         cooldowns.clear();
+        failureStreak.clear();
+        abortMining();
+        verifyPos = null;
     }
 
     @Subscribe(stage = Stage.PRE)
@@ -117,17 +131,78 @@ public class AutoAmethystModule extends ToggleableModule {
 
         tickCounter++;
 
-        if (requirePickaxe.getValue() && !isHoldingPickaxe()) return;
-
         if (!cooldowns.isEmpty()) {
-            cooldowns.entrySet().removeIf(e -> (tickCounter - e.getValue()) >= 200);
+            cooldowns.entrySet().removeIf(e -> (tickCounter - e.getValue()) >= 400);
+        }
+        if (!failureStreak.isEmpty()) {
+            failureStreak.entrySet().removeIf(e -> (tickCounter - cooldowns.getOrDefault(e.getKey(), tickCounter)) >= 600);
+        }
+
+        if (verifyPos != null) {
+            if ((tickCounter - verifyTick) >= VERIFY_AFTER_TICKS) {
+                BlockState now = mc.level.getBlockState(verifyPos);
+
+                boolean success = now.isAir() || !isShardDropper(now);
+
+                if (success) {
+                    failureStreak.remove(verifyPos);
+                } else {
+
+                    int streak = failureStreak.getOrDefault(verifyPos, 0) + 1;
+                    failureStreak.put(verifyPos, streak);
+
+                    int baseCd = Math.max(retryCooldownTicks.getValue(), FAIL_COOLDOWN_TICKS);
+
+                    int extra = Math.min(60, (streak * streak) + (streak * 2));
+                    @SuppressWarnings("unused")
+                    int backoff = baseCd + extra;
+
+                    cooldowns.put(verifyPos, tickCounter);
+
+                    if (streak >= MAX_FAILURE_STREAK) {
+                        cooldowns.put(verifyPos, tickCounter - (baseCd - 80));
+                    }
+                }
+
+                verifyPos = null;
+            }
+
+            return;
+        }
+
+        if (miningPos != null) {
+            BlockState st = mc.level.getBlockState(miningPos);
+
+            if (st.isAir() || !isShardDropper(st) || !matchesStageFilter(st, breakSetting.getValue())) {
+                miningPos = null;
+                miningDir = null;
+                return;
+            }
+
+            if ((tickCounter - miningStartTick) >= 1) {
+                sendDig(ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, miningPos, miningDir);
+
+                if (swing.getValue()) {
+                    mc.player.swing(InteractionHand.MAIN_HAND);
+                }
+
+                verifyPos = miningPos;
+                verifyTick = tickCounter;
+
+                cooldowns.put(miningPos, tickCounter);
+
+                miningPos = null;
+                miningDir = null;
+            }
+
+            return;
         }
 
         buddingCache.clear();
         targets.clear();
 
         final BlockPos playerPos = mc.player.blockPosition();
-        final int r = range.getValue();
+        final int r = SCAN_RANGE;
 
         BlockPos.MutableBlockPos mpos = new BlockPos.MutableBlockPos();
 
@@ -153,9 +228,9 @@ public class AutoAmethystModule extends ToggleableModule {
                             if (facingOutward != attachSide) continue;
                         }
 
-                        if (!isWithinVanillaReach(shardPos)) continue;
+                        if (!matchesStageFilter(shardState, breakSetting.getValue())) continue;
 
-                        if (requireLineOfSight.getValue() && !hasLineOfSight(shardPos)) continue;
+                        if (!isWithinVanillaReach(shardPos)) continue;
 
                         targets.add(shardPos.immutable());
                     }
@@ -168,10 +243,14 @@ public class AutoAmethystModule extends ToggleableModule {
         targets.sort(Comparator.comparingDouble(this::eyeDistanceSqrToCenter));
 
         for (BlockPos pos : targets) {
-            int cd = retryCooldownTicks.getValue();
-            if (cd > 0) {
-                Integer last = cooldowns.get(pos);
-                if (last != null && (tickCounter - last) < cd) continue;
+            int baseCd = Math.max(retryCooldownTicks.getValue(), FAIL_COOLDOWN_TICKS);
+            Integer last = cooldowns.get(pos);
+            if (last != null && (tickCounter - last) < baseCd) continue;
+
+            int streak = failureStreak.getOrDefault(pos, 0);
+            if (streak > 0) {
+                int extra = Math.min(60, (streak * streak) + (streak * 2));
+                if (last != null && (tickCounter - last) < (baseCd + extra)) continue;
             }
 
             BlockState state = mc.level.getBlockState(pos);
@@ -181,13 +260,36 @@ public class AutoAmethystModule extends ToggleableModule {
                 continue;
             }
 
-            Direction dir = getDirectionForBreak(pos);
+            if (!matchesStageFilter(state, breakSetting.getValue())) {
+                cooldowns.put(pos, tickCounter);
+                continue;
+            }
 
-            boolean sent = breakBlockPacket(pos, dir, swing.getValue());
-            cooldowns.put(pos, tickCounter);
+            Direction dir = getBestDigFace(pos, state);
 
-            if (sent) break;
+            sendDig(ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK, pos, dir);
+
+            sendDig(ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK, pos, dir);
+
+            miningPos = pos;
+            miningDir = dir;
+            miningStartTick = tickCounter;
+
+            break;
         }
+    }
+
+    private void sendDig(ServerboundPlayerActionPacket.Action action, BlockPos pos, Direction dir) {
+        if (mc.player == null || mc.player.connection == null) return;
+        mc.player.connection.send(new ServerboundPlayerActionPacket(action, pos, dir));
+    }
+
+    private void abortMining() {
+        if (miningPos != null && miningDir != null) {
+            sendDig(ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK, miningPos, miningDir);
+        }
+        miningPos = null;
+        miningDir = null;
     }
 
     private boolean isShardDropper(BlockState state) {
@@ -197,19 +299,25 @@ public class AutoAmethystModule extends ToggleableModule {
         return b instanceof AmethystClusterBlock;
     }
 
-    private boolean isHoldingPickaxe() {
-        if (mc.player == null) return false;
+    private boolean matchesStageFilter(BlockState state, BreakStage filter) {
+        Block b = state.getBlock();
 
-        ItemStack stack = mc.player.getMainHandItem();
-        if (stack.isEmpty()) return false;
+        boolean isSmall = b == Blocks.SMALL_AMETHYST_BUD;
+        boolean isMedium = b == Blocks.MEDIUM_AMETHYST_BUD;
+        boolean isLarge = b == Blocks.LARGE_AMETHYST_BUD;
+        boolean isCluster = b == Blocks.AMETHYST_CLUSTER;
 
-        Item item = stack.getItem();
-        return item == Items.WOODEN_PICKAXE
-                || item == Items.STONE_PICKAXE
-                || item == Items.IRON_PICKAXE
-                || item == Items.GOLDEN_PICKAXE
-                || item == Items.DIAMOND_PICKAXE
-                || item == Items.NETHERITE_PICKAXE;
+        if (!(isSmall || isMedium || isLarge || isCluster)) return false;
+
+        return switch (filter) {
+            case SMALL_ONLY -> isSmall;
+            case MEDIUM_ONLY -> isMedium;
+            case LARGE_ONLY -> isLarge;
+            case CLUSTER_ONLY -> isCluster;
+            case SMALL_TO_LARGE -> (isSmall || isMedium || isLarge);
+            case LARGE_AND_CLUSTER -> (isLarge || isCluster);
+            case ALL -> true;
+        };
     }
 
     private boolean isWithinVanillaReach(BlockPos pos) {
@@ -223,8 +331,19 @@ public class AutoAmethystModule extends ToggleableModule {
         return eye.distanceToSqr(center);
     }
 
-    private boolean hasLineOfSight(BlockPos pos) {
-        if (mc.player == null || mc.level == null) return false;
+    private Direction getBestDigFace(BlockPos pos, BlockState state) {
+        Direction rayDir = getRaycastFace(pos);
+        if (rayDir != null) return rayDir;
+
+        if (state.getBlock() instanceof AmethystClusterBlock) {
+            return state.getValue(AmethystClusterBlock.FACING);
+        }
+
+        return getDirectionForBreak(pos);
+    }
+
+    private Direction getRaycastFace(BlockPos pos) {
+        if (mc.player == null || mc.level == null) return null;
 
         Vec3 eye = new Vec3(mc.player.getX(), mc.player.getEyeY(), mc.player.getZ());
         Vec3 target = Vec3.atCenterOf(pos);
@@ -237,33 +356,10 @@ public class AutoAmethystModule extends ToggleableModule {
                 mc.player
         ));
 
-        if (hit.getType() == HitResult.Type.MISS) return false;
-        return hit.getBlockPos().equals(pos);
-    }
+        if (hit.getType() != HitResult.Type.BLOCK) return null;
+        if (!hit.getBlockPos().equals(pos)) return null;
 
-    private boolean breakBlockPacket(BlockPos pos, Direction dir, boolean doSwing) {
-        if (mc.player == null || mc.player.connection == null || mc.level == null) return false;
-
-        BlockState state = mc.level.getBlockState(pos);
-        if (state.isAir()) return false;
-
-        mc.player.connection.send(new ServerboundPlayerActionPacket(
-                ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK,
-                pos,
-                dir
-        ));
-
-        mc.player.connection.send(new ServerboundPlayerActionPacket(
-                ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK,
-                pos,
-                dir
-        ));
-
-        if (doSwing) {
-            mc.player.swing(InteractionHand.MAIN_HAND);
-        }
-
-        return true;
+        return hit.getDirection();
     }
 
     private Direction getDirectionForBreak(BlockPos pos) {
@@ -282,7 +378,7 @@ public class AutoAmethystModule extends ToggleableModule {
 
     @Subscribe
     private void onRender3D(EventRender3D event) {
-        if (!render.getValue()) return;
+        if (!renderSettings.getValue()) return;
         if (mc.player == null || mc.level == null) return;
 
         IRenderer3D r = event.getRenderer();
@@ -308,5 +404,15 @@ public class AutoAmethystModule extends ToggleableModule {
         }
 
         r.end();
+    }
+
+    public enum BreakStage {
+        CLUSTER_ONLY,
+        LARGE_ONLY,
+        MEDIUM_ONLY,
+        SMALL_ONLY,
+        SMALL_TO_LARGE,
+        LARGE_AND_CLUSTER,
+        ALL
     }
 }
