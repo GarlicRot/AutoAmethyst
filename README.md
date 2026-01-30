@@ -1,59 +1,68 @@
-# RusherHack Example Plugin
+<h1 align="center">AutoAmethyst</h1>
 
-An example implementation of a RusherHack plugin. 
+<h3 align="center">Automatically harvest amethyst shards without breaking Budding Amethyst</h3>
 
-RusherHack plugins are custom add-ons written by developers to add new features to RusherHack.
+<p align="center">
+  <img src="https://img.shields.io/github/downloads/GarlicRot/AutoAmethyst/total?label=Downloads" alt="GitHub Downloads (all assets, all releases)">
+  <img src="https://img.shields.io/badge/Minecraft-1.21.4-62b47a?style=flat&logo=minecraft&logoColor=white" alt="Minecraft Version">
+  <img src="https://img.shields.io/badge/%F0%9F%A7%84-Approved%20%E2%9C%94%EF%B8%8F-blue?style=flat" alt="🧄 Approved ✔️">
+</p>
 
-## Setting up the Development Environment
+---
 
-### Installing Java Development Kit (JDK)
+## Overview
 
-For Minecraft versions 1.20.1-1.20.4, you will need to have JDK 17 installed. You can download it [here](https://www.azul.com/downloads/?version=java-17-lts&package=jdk#zulu).
+**AutoAmethyst** automatically breaks amethyst buds and clusters attached to **Budding Amethyst** blocks, allowing you to farm shards efficiently **without ever destroying the budding block itself**.
 
-For Minecraft versions 1.20.5 and newer, you will need to have JDK 21 installed. You can download it [here](https://www.azul.com/downloads/?version=java-21-lts&package=jdk#zulu).
+---
 
-### Installing IntelliJ IDEA
+## Features
 
-IntelliJ IDEA is the preferred Java IDE for rusherhack plugin development.
+- Automatically breaks **amethyst buds & clusters**
+- **Never** breaks Budding Amethyst
+- Vanilla reach & line-of-sight checks
+- Stable packet-based breaking (no ghost mining)
+- Optional pickaxe requirement
+- Visual rendering for budding blocks and targets
 
-IntelliJ IDEA can be downloaded from [the official website](https://www.jetbrains.com/idea/download).
+---
 
-The Community edition is recommended because it is free and open-source.
+## Settings
 
-## Clone the repository
+| Setting            | Description                                                  |
+|--------------------|--------------------------------------------------------------|
+| **Range**          | Scan radius around the player for Budding Amethyst           |
+| **Require Pickaxe**| Only run when holding a pickaxe                              |
+| **Retry Cooldown** | Delay before retrying the same shard target                  |
+| **Line of Sight**  | Only break shards you can directly see                       |
+| **Swing**          | Swing the hand when breaking (visual only)                   |
+| **Render**         | Render Budding Amethyst and target shards                    |
+| **Budding Color**  | Color used to render Budding Amethyst blocks                 |
+| **Target Color**   | Color used to render shard targets                           |
+| **Line Width**     | Width of rendered block outlines                             |
 
-In IntelliJ, when creating a new project there is an option to clone a repository:
+---
 
-<img src="https://rusherhack.org/i/zsa4nyb3v3m5ifk8gkyoywak.png" alt="cloning" width="600"/>
+## Installation
 
-In the URL, write the text `https://github.com/RusherDevelopment/example-plugin.git` and press `Clone` 
+1. Download the latest `.jar` from the  
+   **[Releases](https://github.com/GarlicRot/AutoAmethyst/releases)** page.
+2. Place the file into your `rusherhacks/plugins` directory.
+3. Launch Minecraft with RusherHack installed.
+4. Enable **AutoAmethyst** from the module list.
 
-<img src="https://rusherhack.org/i/2rdwc40q98ihb93lt1yykyw8.png" alt="cloning2" width="600"/>
+---
 
-IntelliJ may prompt you asking if you trust the project. Click `Trust Project` to continue.
+## Notes
 
-You should now have a window that looks like this: 
+> [!NOTE]  
+> AutoAmethyst intentionally uses vanilla reach and avoids client-side mining state to prevent desync, ghost blocks, and swing-only behavior.
 
-<img src="https://rusherhack.org/i/vwvie6ljusi2tfunyrmvty7j.png" alt="project" width="800"/>
+> [!WARNING]  
+> This module is designed for **amethyst buds and clusters only**. It will never break Budding Amethyst blocks.
 
-## Modifying the template
+---
 
-- Open the `gradle.properties` file and modify it to your preferences.
-- Open the `src/main/resources/rusherhack-plugin.json` file and modify it to your preferences.
-  - The `Plugin-Class` property must match the main class of your plugin.
-  - The `Name`, `Version`, and `Minecraft-Versions` properties get automatically filled by the values in the `gradle.properties` file. You can add more Minecraft versions if you wish but compatibility between multiple versions is not guaranteed.
+## License
 
-## Building the plugin
-
-To build the plugin .jar file, you can run the `gradle build` task.
-
-1. Click on the elephant icon on the right of the screen (Gradle)
-2. Navigate to `Tasks` -> `build` -> `build` and double-click it: 
-
-<img src="https://rusherhack.org/i/jkdw12a3wtsz9vvwpvujo9px.png" alt="gradle" width="400"/>
-
-3. The compiled plugin .jar file will be located in the `build/libs` directory: 
-
-<img src="https://rusherhack.org/i/lfwho6o6vrqc4c3znl3pm60v.png" alt="build" width="400"/>
-
-To install the plugin into RusherHack, you can follow the instructions on the [RusherHack plugins repository](https://github.com/RusherDevelopment/rusherhack-plugins?tab=readme-ov-file#installation)
+MIT License © GarlicRot
