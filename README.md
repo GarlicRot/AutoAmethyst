@@ -1,5 +1,5 @@
  <p align="center">
- <img src="./assets/amethyst.png" alt="amethyst" width="250">
+ <img src="./assets/markup_7458.png" alt="amethyst" width="250">
  </p>
 <h1 align="center">AutoAmethyst</h1>
 
