@@ -14,8 +14,7 @@
 
 ## Overview
 
-**AutoAmethyst** automatically breaks amethyst buds and clusters attached to  
-**Budding Amethyst**, allowing you to farm shards efficiently **without ever
+**AutoAmethyst** automatically breaks amethyst buds and clusters attached to **Budding Amethyst**, allowing you to farm shards efficiently **without ever
 destroying the budding block itself**.
 
 The module uses vanilla-safe packet breaking and internal cooldown handling to
