@@ -1,6 +1,7 @@
- <p align="center">
- <img src="./assets/markup_7458.png" alt="amethyst" width="250">
- </p>
+<p align="center">
+  <img src="./assets/markup_7458.png" alt="AutoAmethyst" width="250">
+</p>
+
 <h1 align="center">AutoAmethyst</h1>
 
 <h3 align="center">Automatically harvest amethyst shards without breaking Budding Amethyst</h3>
