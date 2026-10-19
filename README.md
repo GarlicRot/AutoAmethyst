@@ -1,81 +1,97 @@
 <p align="center">
-  <img src="./assets/markup_7458.png" alt="AutoAmethyst" width="250">
+  <img src="assets/markup_7458.png" alt="AutoAmethyst" width="180">
 </p>
 
 <h1 align="center">AutoAmethyst</h1>
-
-<h3 align="center">Automatically harvest amethyst shards without breaking Budding Amethyst</h3>
+<p align="center">Automatic amethyst harvesting for RusherHack — fast, simple, and safe for Budding Amethyst.</p>
 
 <p align="center">
-  <img src="https://img.shields.io/github/downloads/GarlicRot/AutoAmethyst/total?label=Downloads" alt="GitHub Downloads (all assets, all releases)">
-  <img src="https://img.shields.io/badge/Minecraft-1.21.4-62b47a?style=flat&logo=minecraft&logoColor=white" alt="Minecraft Version">
-  <img src="https://img.shields.io/badge/%F0%9F%A7%84-Approved%20%E2%9C%94%EF%B8%8F-blue?style=flat" alt="🧄 Approved ✔️">
+  <a href="https://github.com/GarlicRot/AutoAmethyst/actions/workflows/build.yml"><img alt="Build" src="https://github.com/GarlicRot/AutoAmethyst/actions/workflows/build.yml/badge.svg"></a>
+  <a href="https://github.com/GarlicRot/AutoAmethyst/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/GarlicRot/AutoAmethyst"></a>
+  <img alt="Minecraft 1.21.4" src="https://img.shields.io/badge/Minecraft-1.21.4-62b47a">
+  <img alt="Java 21" src="https://img.shields.io/badge/Java-21-orange">
 </p>
 
-## Overview
+**[Download releases](https://github.com/GarlicRot/AutoAmethyst/releases)** · **[Report a bug](https://github.com/GarlicRot/AutoAmethyst/issues/new/choose)** · **[Changelog](CHANGELOG.md)**
 
-**AutoAmethyst** automatically breaks amethyst buds and clusters attached to **Budding Amethyst**, allowing you to farm shards efficiently **without ever
-destroying the budding block itself**.
+> [!IMPORTANT]
+> AutoAmethyst is a **RusherHack plugin**, not a standalone Fabric mod. This release targets **Minecraft 1.21.4**. Other versions are not claimed as supported.
 
-The module uses vanilla-safe packet breaking and internal cooldown handling to
-avoid ghost mining, swing loops, and desync.
+## What it does
 
-## Features
+AutoAmethyst finds reachable, exposed amethyst growth attached to **Budding Amethyst** and mines it automatically. By default, it only harvests **fully-grown clusters**, letting smaller buds continue growing.
 
-- Automatically breaks **amethyst buds & clusters**
-- **Never** breaks Budding Amethyst
-- Vanilla reach–safe breaking logic
-- Intelligent retry cooldown & failure backoff
-- Packet-based mining (no ghost blocks)
-- Optional swing animation
-- Visual rendering for budding blocks and shard targets
-- Configurable break modes
+- **Fast handoff:** starts the next target when the previous break is confirmed in the world.
+- **Normal block-breaking progression:** uses the current tool and vanilla mining speed, not fake one-tick breaks.
+- **Maximum vanilla reach:** up to **4.5 blocks in Survival** or **5.0 in Creative**, while respecting shorter configured reach.
+- **Automatic recovery:** retries rejected or unconfirmed breaks with bounded backoff.
+- **Two settings:** Harvest and Show Targets. Everything else is automatic.
+- **Budding Amethyst is protected:** mining actions are restricted to the four growth blocks; neither Budding Amethyst nor ordinary Amethyst Blocks are targets.
+
+> [!NOTE]
+> “Fast” means immediate selection and handoff between confirmed breaks. Actual block destruction still follows the server's mining rules; the plugin does not provide server-bypassing instant mine.
+
+## Install
+
+1. Download `AutoAmethyst-2.0.0.jar` from a **GitHub Release** (after v2.0.0 is published).
+2. Close Minecraft. Remove any previous AutoAmethyst JAR from the same `rusherhack/plugins` folder so only one copy loads.
+3. Copy the new JAR into your Minecraft instance's `rusherhack/plugins/` folder.
+4. Start Minecraft **1.21.4** with a compatible RusherHack installation and enable **AutoAmethyst**.
+5. Hold a pickaxe without Silk Touch if you want shards. **Fortune** improves shard yield under vanilla rules.
+
+For **Prism Launcher (Flatpak) on Fedora**, the instance tested during development uses:
+
+```text
+~/.var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher/instances/1.21.4/minecraft/rusherhack/plugins/
+```
+
+For other launchers or instances, locate that instance's actual Minecraft directory and use its `rusherhack/plugins/` subfolder.
+
+> [!WARNING]
+> **All Growth** harvests immature buds too. For a sustainable shard farm, keep the default **Mature Clusters** setting. Do not mine the underlying Budding Amethyst.
 
 ## Settings
 
-| Setting | Description |
-|-------|-------------|
-| **Break** | Select which growth stages to break (Small, Medium, Large, Cluster, or combinations) |
-| **Render** | Render Budding Amethyst blocks and shard targets |
-| **Budding Color** | Color used to render Budding Amethyst blocks |
-| **Target Color** | Color used to render shard targets |
-| **Line Width** | Width of rendered block outlines |
-| **Retry Cooldown** | Delay (in ticks) before retrying the same shard target |
-| **Swing** | Swing the hand when breaking (visual only) |
-| **Bind** | Keybind to toggle the module |
+| Setting | Default | Meaning |
+|:--|:--|:--|
+| **Harvest** | **Mature Clusters** | Mine fully-grown clusters only, or choose **All Growth** to mine buds as well. |
+| **Show Targets** | **On** | Highlight budding blocks (purple), eligible targets (green), and the currently mined block (yellow). |
 
-<p align="center">
-  <img
-    src="https://raw.githubusercontent.com/RusherDevelopment/rusherhack-plugins/main/Assets/AutoAmethyst/Module.png"
-    alt="AutoAmethyst Module Settings"
-    width="250"
-  >
-</p>
+Reach, scanning, breaking speed, confirmations, and retries are automatic. There are no unnecessary sliders for them.
 
-## Break Modes
+## Build from source
 
-The **Break** setting allows control over which amethyst growth stages are harvested:
+Requires **Java 21**, the checked-in Gradle wrapper, and a reachable RusherHack API snapshot repository.
 
-- **Cluster Only**
-- **Large Only**
-- **Medium Only**
-- **Small Only**
-- **Small → Large**
-- **Large + Cluster**
-- **All**
+```bash
+chmod +x ./gradlew                 # Needed only if executable permission was lost
+./gradlew updateAccessWidener
+./gradlew test build
+ls -lh build/libs/
+```
 
-## Installation
+Output: `build/libs/AutoAmethyst-2.0.0.jar`.
 
-1. Download the latest `.jar` from the  
-   **[Releases](https://github.com/GarlicRot/AutoAmethyst/releases)** page
-2. Place the file into your `rusherhacks/plugins` directory
-3. Launch Minecraft with RusherHack installed
-4. Enable **AutoAmethyst** from the module list
+> [!TIP]
+> **Use official GitHub Releases for shared JARs.** The [release workflow](.github/workflows/release.yml) compiles the plugin directly from the tagged source, verifies its version metadata, and publishes a SHA-256 checksum. Run `sha256sum -c SHA256SUMS.txt` in the folder containing both downloaded files to check your copy.
 
-> [!WARNING]  
-> This module is **strictly limited** to amethyst buds and clusters.  
-> **Budding Amethyst blocks are never broken.**
+## Troubleshooting
+
+| Symptom | What to check |
+|:--|:--|
+| Nothing is highlighted | Enable **Show Targets**, make sure you're near a geode and have the module on. |
+| Smaller buds are ignored | **Mature Clusters** is intentional; wait for the final growth stage. |
+| A cluster is highlighted but not mined | It may be obstructed, too far away, or subject to server permissions. Try an exposed cluster within normal reach. |
+| Mining slows or retries | Tool speed, server lag, or server-side mining checks can affect success. |
+| The plugin won't load | Confirm Minecraft **1.21.4**, a compatible RusherHack version, the correct plugin directory, and exactly one AutoAmethyst JAR. |
+| Gradle reports *Unsupported class file major version 69* | Gradle 8.11 is being run with Java 25. Run the Gradle wrapper using **Java 21**. |
+
+The module yields to manual attack input, item use, menus, and spectator mode. It cannot bypass protected regions or server anti-cheat checks.
+
+## Development and releases
+
+Read **[TESTING.md](TESTING.md)** for regression checks, **[CONTRIBUTING.md](CONTRIBUTING.md)** for contributions, and **[RELEASING.md](RELEASING.md)** for the GitHub-controlled release procedure.
 
 ## License
 
-MIT License © GarlicRot
+See [LICENSE](LICENSE). The repository currently says **“All rights reserved”**; it does not contain an MIT license grant. Please do not assume the source has an open-source license until the owner explicitly changes the license.

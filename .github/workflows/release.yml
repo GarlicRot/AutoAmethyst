@@ -1,124 +1,75 @@
 name: Build and Release AutoAmethyst
 
 on:
-  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
 
 permissions:
   contents: write
 
 jobs:
-  build:
-    name: Build AutoAmethyst
+  release:
+    name: Build and publish tagged source
     runs-on: ubuntu-24.04
-    outputs:
-      new_version: ${{ steps.version.outputs.new_version }}
-      new_tag: ${{ steps.version.outputs.new_tag }}
-
+    timeout-minutes: 30
     steps:
-      - name: Check out main branch
+      - name: Check out tagged source
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-
-      - name: Make gradlew executable
-        run: chmod +x ./gradlew
-
-      - name: Determine next version + tag
-        id: version
-        run: |
-          git fetch --tags --force
-
-          latest_tag=$(git describe --tags "$(git rev-list --tags --max-count=1)" 2>/dev/null || echo "v0.0.0")
-
-          if [ "$latest_tag" = "v0.0.0" ]; then
-            new_version="1.0.0"
-          else
-            version=${latest_tag#v}
-            IFS='.' read -r major minor patch <<< "$version"
-            new_patch=$((patch + 1))
-            new_version="$major.$minor.$new_patch"
-          fi
-
-          new_tag="v$new_version"
-
-          echo "new_version=$new_version" >> $GITHUB_OUTPUT
-          echo "new_tag=$new_tag" >> $GITHUB_OUTPUT
-
-      - name: Setup JDK for Java 21
+          persist-credentials: false
+      - name: Set up Java 21
         uses: actions/setup-java@v4
         with:
+          distribution: temurin
           java-version: '21'
-          distribution: 'temurin'
-          cache: gradle
-
-      - name: Validate Gradle Wrapper
-        uses: gradle/wrapper-validation-action@v1
-
-      - name: Build Plugin
-        run: ./gradlew build
-
-      - name: Locate built jar
-        id: jar
+      - name: Set up Gradle and validate wrapper
+        uses: gradle/actions/setup-gradle@v6
+      - name: Allow executing Gradle wrapper
+        run: chmod +x ./gradlew
+      - name: Verify the version matches the pushed tag
+        shell: bash
         run: |
-          echo "Listing JAR files in build/libs:"
-          ls -l build/libs || true
-
-          jar_file=$(ls build/libs/*.jar 2>/dev/null | head -n 1)
-          if [ -z "$jar_file" ]; then
-            echo "No JAR produced in build/libs"
+          set -euo pipefail
+          version=$(sed -n 's/^plugin_version=//p' gradle.properties | tr -d '[:space:]')
+          [[ -n "$version" && "v$version" == "$GITHUB_REF_NAME" ]] || {
+            echo "ERROR: tag '$GITHUB_REF_NAME' does not match plugin_version='$version'"
             exit 1
-          fi
-
-          echo "jar_file=$jar_file" >> $GITHUB_OUTPUT
-
-      - name: Rename jar for release
+          }
+      - name: Extract RusherHack access widener
+        run: ./gradlew --no-daemon updateAccessWidener
+      - name: Test and build from tagged source
+        run: ./gradlew --no-daemon test build
+      - name: Verify JAR metadata and create checksum
+        shell: bash
         run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          jar="build/libs/AutoAmethyst-${version}.jar"
+          [[ -s "$jar" ]] || { echo "ERROR: expected JAR missing: $jar"; exit 1; }
+          python3 - "$jar" "$version" <<'PY'
+          import json
+          import sys
+          import zipfile
+
+          jar_path, version = sys.argv[1:]
+          with zipfile.ZipFile(jar_path) as archive:
+              metadata = json.loads(archive.read("rusherhack-plugin.json"))
+          assert metadata["Name"] == "AutoAmethyst", metadata
+          assert metadata["Version"] == version, metadata
+          assert metadata["Minecraft-Versions"] == ["1.21.4"], metadata
+          print(f"Verified AutoAmethyst {version} metadata for Minecraft 1.21.4")
+          PY
           mkdir -p dist
-          cp "${{ steps.jar.outputs.jar_file }}" "dist/AutoAmethyst-${{ steps.version.outputs.new_version }}.jar"
-          ls -l dist
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: AutoAmethyst
-          path: dist/AutoAmethyst-${{ steps.version.outputs.new_version }}.jar
-
-  release:
-    name: Create GitHub Release
-    needs: build
-    runs-on: ubuntu-24.04
-
-    steps:
-      - name: Check out repository (for tagging)
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Download build artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: AutoAmethyst
-          path: dist
-
-      - name: Create and push tag
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git fetch --tags --force
-          tag="${{ needs.build.outputs.new_tag }}"
-
-          if git rev-parse "$tag" >/dev/null 2>&1; then
-            echo "Tag already exists: $tag"
-          else
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git tag "$tag"
-            git push origin "$tag"
-          fi
-
-      - name: Create GitHub Release
+          cp "$jar" dist/
+          (cd dist && sha256sum "AutoAmethyst-${version}.jar" > SHA256SUMS.txt)
+          (cd dist && sha256sum -c SHA256SUMS.txt)
+      - name: Publish GitHub-built JAR and checksum
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ needs.build.outputs.new_tag }}
-          name: AutoAmethyst ${{ needs.build.outputs.new_tag }}
-          files: dist/AutoAmethyst-${{ needs.build.outputs.new_version }}.jar
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            dist/AutoAmethyst-*.jar
+            dist/SHA256SUMS.txt
+          fail_on_unmatched_files: true
