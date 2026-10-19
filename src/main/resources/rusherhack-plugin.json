@@ -2,13 +2,8 @@
   "Plugin-Class": "garlicrot.autoamethyst.AutoAmethystPlugin",
   "Name": "${project.plugin_name}",
   "Version": "${project.plugin_version}",
-  "Description": "Automatically farms amethyst shards by breaking buds/clusters without breaking Budding Amethyst.",
+  "Description": "Harvest amethyst clusters using vanilla block-breaking progression while protecting Budding Amethyst.",
   "URL": "https://github.com/GarlicRot/AutoAmethyst",
   "Authors": ["GarlicRot"],
-  "Minecraft-Versions": [
-    "1.20.6",
-    "1.21.1",
-    "1.21.3",
-    "1.21.4"
-  ]
+  "Minecraft-Versions": ["1.21.4"]
 }

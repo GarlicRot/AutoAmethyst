@@ -1,113 +1,86 @@
 package garlicrot.autoamethyst;
 
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
 import net.minecraft.world.InteractionHand;
-import net.minecraft.world.level.ClipContext;
-import net.minecraft.world.level.block.AmethystClusterBlock;
 import net.minecraft.world.level.block.Block;
-import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.phys.BlockHitResult;
-import net.minecraft.world.phys.HitResult;
-import net.minecraft.world.phys.Vec3;
 
 import org.rusherhack.client.api.events.client.EventUpdate;
 import org.rusherhack.client.api.events.render.EventRender3D;
 import org.rusherhack.client.api.feature.module.ModuleCategory;
 import org.rusherhack.client.api.feature.module.ToggleableModule;
 import org.rusherhack.client.api.render.IRenderer3D;
-import org.rusherhack.client.api.setting.ColorSetting;
 import org.rusherhack.core.event.stage.Stage;
 import org.rusherhack.core.event.subscribe.Subscribe;
 import org.rusherhack.core.setting.BooleanSetting;
 import org.rusherhack.core.setting.EnumSetting;
-import org.rusherhack.core.setting.NumberSetting;
+
 import org.rusherhack.core.utils.ColorUtils;
-
-import java.awt.*;
-import java.util.*;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
-public class AutoAmethystModule extends ToggleableModule {
+/**
+ * Mines one amethyst growth block at a time. START and STOP packets are
+ * separated by the *actual* vanilla mining progress for the currently held
+ * tool, not by a fixed, one-tick delay.
+ *
+ * We deliberately do not mutate Minecraft's own MultiPlayerGameMode mining
+ * state: its ordinary mouse-input loop may cancel simulated mining when the
+ * attack key is up. This session owns its packet lifecycle and safety checks.
+ */
+public final class AutoAmethystModule extends ToggleableModule {
+    // Scan frequently enough to detect freshly grown crystals, but avoid a full
+    // cube scan on every frame. Reach is read from the vanilla player attribute.
+    private static final int SCAN_RADIUS = 6;
+    private static final int SCAN_EVERY_TICKS = 2;
+    private static final int VERIFY_TIMEOUT_TICKS = 16;
+    private static final int FINISH_SAFETY_TICKS = 2;
+    private static final int RETRY_BASE_TICKS = 10;
+    private static final int MINING_TIMEOUT_TICKS = 120;
+    private static final int BUDDING_COLOR = 0xFFAA3CFF;
+    private static final int TARGET_COLOR = 0xFF3CFF78;
+    private static final int MINING_COLOR = 0xFFFFCD3C;
+    private static final int CLEAN_RETRIES_EVERY_TICKS = 200;
+    private static final int RETRY_TTL_TICKS = 1200;
 
     private static AutoAmethystModule instance;
     private final Minecraft mc = Minecraft.getInstance();
 
-    private static final double VANILLA_REACH = 4.5;
+    private final EnumSetting<HarvestRules.HarvestMode> harvestMode =
+            new EnumSetting<>("Harvest", "Mature Only collects shards; All Growth also removes immature buds.",
+                    HarvestRules.HarvestMode.MATURE_ONLY);
+    private final BooleanSetting render =
+            new BooleanSetting("Show Targets", "Highlight Budding Amethyst and crystals within mining reach.", true);
 
-    private static final int SCAN_RANGE = 12;
+    // World state is never retained across dimensions / disconnects.
+    private ClientLevel trackedWorld;
+    private long tick;
+    private long nextScanTick;
+    private AmethystTargetFinder.Scan scan = new AmethystTargetFinder.Scan(List.of(), List.of());
+    private final Map<BlockPos, Retry> retries = new HashMap<>();
 
-    private static final int FAIL_COOLDOWN_TICKS = 4;
+    // Only one active mining operation, or one pending server confirmation.
+    private BlockPos miningPos;
+    private Direction miningFace;
+    private Block miningBlock;
+    private int miningHotbarSlot;
+    private long miningStartTick;
+    private float miningProgress;
+    private int finishingTicks;
+    private boolean verifying;
+    private long verifyStartTick;
 
-    private static final int VERIFY_AFTER_TICKS = 2;
-
-    private static final int MAX_FAILURE_STREAK = 3;
-
-    private final EnumSetting<BreakStage> breakSetting =
-            new EnumSetting<>("Break", "Which growth stage(s) to break.", BreakStage.ALL);
-
-    private final ColorSetting buddingColor =
-            new ColorSetting("Budding Color", new Color(170, 60, 255, 60))
-                    .setAlphaAllowed(true)
-                    .setThemeSyncAllowed(true);
-
-    private final ColorSetting targetColor =
-            new ColorSetting("Target Color", new Color(60, 255, 120, 80))
-                    .setAlphaAllowed(true)
-                    .setThemeSyncAllowed(true);
-
-    private final NumberSetting<Float> lineWidth =
-            new NumberSetting<>("Line Width", "Outline width.", 1.0f, 0.0f, 5.0f)
-                    .incremental(0.25f);
-
-    private final BooleanSetting renderSettings =
-            new BooleanSetting("Render", "Render budding + targets.", true);
-
-    private final NumberSetting<Integer> retryCooldownTicks =
-            new NumberSetting<>("Retry Cooldown", "Ticks before retrying the same target.", 4, 0, 20)
-                    .incremental(1);
-
-    private final BooleanSetting swing =
-            new BooleanSetting("Swing", "Swing hand when breaking (visual).", true);
-
-    private final List<BlockPos> buddingCache = new ArrayList<>();
-    private final List<BlockPos> targets = new ArrayList<>();
-
-    private final Map<BlockPos, Integer> cooldowns = new HashMap<>();
-
-    private final Map<BlockPos, Integer> failureStreak = new HashMap<>();
-
-    private int tickCounter = 0;
-
-    private BlockPos miningPos = null;
-    private Direction miningDir = null;
-    private int miningStartTick = 0;
-
-    private BlockPos verifyPos = null;
-    private int verifyTick = 0;
+    private record Retry(int failures, long retryAfter, long updatedAt) {}
 
     private AutoAmethystModule() {
-        super(
-                "AutoAmethyst",
-                "Automatically breaks amethyst buds/clusters without breaking Budding Amethyst.",
-                ModuleCategory.MISC
-        );
-
-        renderSettings.addSubSettings(
-                buddingColor,
-                targetColor,
-                lineWidth
-        );
-
-        this.registerSettings(
-                breakSetting,
-                renderSettings,
-                retryCooldownTicks,
-                swing
-        );
+        super("AutoAmethyst", "Safely harvest amethyst buds/clusters using normal mining progression.",
+                ModuleCategory.MISC);
+        registerSettings(harvestMode, render);
     }
 
     public static synchronized AutoAmethystModule getInstance() {
@@ -116,303 +89,213 @@ public class AutoAmethystModule extends ToggleableModule {
     }
 
     @Override
+    public void onEnable() {
+        reset(true);
+    }
+
+    @Override
     public void onDisable() {
-        buddingCache.clear();
-        targets.clear();
-        cooldowns.clear();
-        failureStreak.clear();
-        abortMining();
-        verifyPos = null;
+        reset(true);
+    }
+
+    private void reset(boolean abort) {
+        abandonMining(abort);
+        scan = new AmethystTargetFinder.Scan(List.of(), List.of());
+        retries.clear();
+        trackedWorld = null;
+        tick = 0;
+        nextScanTick = 0;
+    }
+
+    private void abandonMining(boolean abort) {
+        // ABORT only an unfinished operation; a completed STOP must not be
+        // followed by an unrelated ABORT for the same target.
+        if (abort && miningPos != null && !verifying) {
+            sendDig(ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK, miningPos, miningFace);
+        }
+        miningPos = null;
+        miningFace = null;
+        miningBlock = null;
+        verifying = false;
     }
 
     @Subscribe(stage = Stage.PRE)
-    public void preTick(EventUpdate event) {
-        if (mc.player == null || mc.level == null || mc.player.connection == null) return;
-
-        tickCounter++;
-
-        if (!cooldowns.isEmpty()) {
-            cooldowns.entrySet().removeIf(e -> (tickCounter - e.getValue()) >= 400);
+    private void onTick(EventUpdate event) {
+        if (mc.player == null || mc.level == null || mc.player.connection == null) {
+            // The old world might already be gone. Don't send packets into a new connection.
+            reset(false);
+            return;
         }
-        if (!failureStreak.isEmpty()) {
-            failureStreak.entrySet().removeIf(e -> (tickCounter - cooldowns.getOrDefault(e.getKey(), tickCounter)) >= 600);
+        if (trackedWorld != mc.level) {
+            reset(false);
+            trackedWorld = mc.level;
+        }
+        tick++;
+
+        if (tick % CLEAN_RETRIES_EVERY_TICKS == 0) {
+            retries.entrySet().removeIf(e -> tick - e.getValue().updatedAt() > RETRY_TTL_TICKS);
         }
 
-        if (verifyPos != null) {
-            if ((tickCounter - verifyTick) >= VERIFY_AFTER_TICKS) {
-                BlockState now = mc.level.getBlockState(verifyPos);
+        if (tick >= nextScanTick) {
+            scan = AmethystTargetFinder.scan(mc.level, mc.player,
+                    harvestMode.getValue(), SCAN_RADIUS, allowedReach());
+            nextScanTick = tick + SCAN_EVERY_TICKS;
+        }
 
-                boolean success = now.isAir() || !isShardDropper(now);
+        // Successful mining need not waste the old fixed 16-tick verification
+        // period: switch targets immediately when the server changes the block.
+        if (verifying && !finishVerification()) return;
 
-                if (success) {
-                    failureStreak.remove(verifyPos);
-                } else {
-
-                    int streak = failureStreak.getOrDefault(verifyPos, 0) + 1;
-                    failureStreak.put(verifyPos, streak);
-
-                    int baseCd = Math.max(retryCooldownTicks.getValue(), FAIL_COOLDOWN_TICKS);
-
-                    int extra = Math.min(60, (streak * streak) + (streak * 2));
-                    @SuppressWarnings("unused")
-                    int backoff = baseCd + extra;
-
-                    cooldowns.put(verifyPos, tickCounter);
-
-                    if (streak >= MAX_FAILURE_STREAK) {
-                        cooldowns.put(verifyPos, tickCounter - (baseCd - 80));
-                    }
-                }
-
-                verifyPos = null;
-            }
-
+        if (!canAutoMine()) {
+            abandonMining(true);
             return;
         }
 
         if (miningPos != null) {
-            BlockState st = mc.level.getBlockState(miningPos);
+            progressMining();
+        } else {
+            beginMining();
+        }
+    }
 
-            if (st.isAir() || !isShardDropper(st) || !matchesStageFilter(st, breakSetting.getValue())) {
-                miningPos = null;
-                miningDir = null;
-                return;
-            }
+    private boolean canAutoMine() {
+        // No extra settings: manual input, GUIs and spectator mode always win.
+        return mc.screen == null && !mc.player.isSpectator()
+                && !mc.options.keyAttack.isDown() && !mc.player.isUsingItem();
+    }
 
-            if ((tickCounter - miningStartTick) >= 1) {
-                sendDig(ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, miningPos, miningDir);
+    private double allowedReach() {
+        return HarvestRules.vanillaReach(mc.player.blockInteractionRange(),
+                mc.player.getAbilities().instabuild);
+    }
 
-                if (swing.getValue()) {
-                    mc.player.swing(InteractionHand.MAIN_HAND);
-                }
+    private void beginMining() {
+        for (AmethystTargetFinder.Target candidate : scan.targets()) {
+            BlockPos pos = candidate.pos();
+            Retry retry = retries.get(pos);
+            if (retry != null && tick < retry.retryAfter()) continue;
 
-                verifyPos = miningPos;
-                verifyTick = tickCounter;
+            BlockState state = mc.level.getBlockState(pos);
+            if (!AmethystTargetFinder.isEligible(mc.level, pos, state, harvestMode.getValue())) continue;
+            AmethystTargetFinder.Target current = AmethystTargetFinder.visibleHit(
+                    mc.level, mc.player, pos, state, allowedReach());
+            if (current == null) continue;
 
-                cooldowns.put(miningPos, tickCounter);
+            // The server tracks mining time from START. We don't issue STOP
+            // until the sum of vanilla block-damage increments reaches 1.0,
+            // plus a small safety margin for server/client tick alignment.
+            sendDig(ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK, pos, current.face());
+            miningPos = pos;
+            miningFace = current.face();
+            miningBlock = state.getBlock();
+            miningHotbarSlot = mc.player.getInventory().selected;
+            miningStartTick = tick;
+            miningProgress = 0.0f;
+            finishingTicks = 0;
+            mc.player.swing(InteractionHand.MAIN_HAND);
 
-                miningPos = null;
-                miningDir = null;
-            }
+            // Creative mode / instant-mining can change the block right away.
+            if (mc.level.getBlockState(pos).getBlock() != miningBlock) beginVerification();
+            return;
+        }
+    }
 
+    private void progressMining() {
+        BlockState state = mc.level.getBlockState(miningPos);
+        if (state.getBlock() != miningBlock) {
+            beginVerification();
+            return;
+        }
+        if (mc.player.getInventory().selected != miningHotbarSlot
+                || !AmethystTargetFinder.isEligible(mc.level, miningPos, state, harvestMode.getValue())) {
+            abandonMining(true);
+            return;
+        }
+        if (AmethystTargetFinder.visibleHit(mc.level, mc.player, miningPos, state,
+                allowedReach()) == null) {
+            abandonMining(true);
+            return;
+        }
+        if (tick - miningStartTick >= MINING_TIMEOUT_TICKS) {
+            BlockPos failed = miningPos;
+            abandonMining(true);
+            markFailure(failed);
             return;
         }
 
-        buddingCache.clear();
-        targets.clear();
-
-        final BlockPos playerPos = mc.player.blockPosition();
-        final int r = SCAN_RANGE;
-
-        BlockPos.MutableBlockPos mpos = new BlockPos.MutableBlockPos();
-
-        for (int dx = -r; dx <= r; dx++) {
-            for (int dy = -r; dy <= r; dy++) {
-                for (int dz = -r; dz <= r; dz++) {
-                    mpos.set(playerPos.getX() + dx, playerPos.getY() + dy, playerPos.getZ() + dz);
-
-                    BlockState st = mc.level.getBlockState(mpos);
-                    if (st.getBlock() != Blocks.BUDDING_AMETHYST) continue;
-
-                    BlockPos buddingPos = mpos.immutable();
-                    buddingCache.add(buddingPos);
-
-                    for (Direction attachSide : Direction.values()) {
-                        BlockPos shardPos = buddingPos.relative(attachSide);
-                        BlockState shardState = mc.level.getBlockState(shardPos);
-
-                        if (!isShardDropper(shardState)) continue;
-
-                        if (shardState.getBlock() instanceof AmethystClusterBlock) {
-                            Direction facingOutward = shardState.getValue(AmethystClusterBlock.FACING);
-                            if (facingOutward != attachSide) continue;
-                        }
-
-                        if (!matchesStageFilter(shardState, breakSetting.getValue())) continue;
-
-                        if (!isWithinVanillaReach(shardPos)) continue;
-
-                        targets.add(shardPos.immutable());
-                    }
-                }
-            }
+        float damage = state.getDestroyProgress(mc.player, mc.level, miningPos);
+        if (Float.isFinite(damage) && damage > 0.0f) {
+            miningProgress += damage;
         }
-
-        if (targets.isEmpty()) return;
-
-        targets.sort(Comparator.comparingDouble(this::eyeDistanceSqrToCenter));
-
-        for (BlockPos pos : targets) {
-            int baseCd = Math.max(retryCooldownTicks.getValue(), FAIL_COOLDOWN_TICKS);
-            Integer last = cooldowns.get(pos);
-            if (last != null && (tickCounter - last) < baseCd) continue;
-
-            int streak = failureStreak.getOrDefault(pos, 0);
-            if (streak > 0) {
-                int extra = Math.min(60, (streak * streak) + (streak * 2));
-                if (last != null && (tickCounter - last) < (baseCd + extra)) continue;
-            }
-
-            BlockState state = mc.level.getBlockState(pos);
-
-            if (!isShardDropper(state)) {
-                cooldowns.put(pos, tickCounter);
-                continue;
-            }
-
-            if (!matchesStageFilter(state, breakSetting.getValue())) {
-                cooldowns.put(pos, tickCounter);
-                continue;
-            }
-
-            Direction dir = getBestDigFace(pos, state);
-
-            sendDig(ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK, pos, dir);
-
-            sendDig(ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK, pos, dir);
-
-            miningPos = pos;
-            miningDir = dir;
-            miningStartTick = tickCounter;
-
-            break;
+        if ((tick - miningStartTick) % 5 == 0) {
+            mc.player.swing(InteractionHand.MAIN_HAND);
+        }
+        if (miningProgress >= 1.0f && ++finishingTicks >= FINISH_SAFETY_TICKS) {
+            sendDig(ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, miningPos, miningFace);
+            beginVerification();
         }
     }
 
-    private void sendDig(ServerboundPlayerActionPacket.Action action, BlockPos pos, Direction dir) {
-        if (mc.player == null || mc.player.connection == null) return;
-        mc.player.connection.send(new ServerboundPlayerActionPacket(action, pos, dir));
+    private void beginVerification() {
+        // Packet submission isn't server confirmation. Wait for the target's
+        // actual client-world state to be updated by the server.
+        verifying = true;
+        verifyStartTick = tick;
     }
 
-    private void abortMining() {
-        if (miningPos != null && miningDir != null) {
-            sendDig(ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK, miningPos, miningDir);
-        }
-        miningPos = null;
-        miningDir = null;
-    }
-
-    private boolean isShardDropper(BlockState state) {
-        Block b = state.getBlock();
-        if (b == Blocks.BUDDING_AMETHYST) return false;
-        if (b == Blocks.AMETHYST_BLOCK) return false;
-        return b instanceof AmethystClusterBlock;
-    }
-
-    private boolean matchesStageFilter(BlockState state, BreakStage filter) {
-        Block b = state.getBlock();
-
-        boolean isSmall = b == Blocks.SMALL_AMETHYST_BUD;
-        boolean isMedium = b == Blocks.MEDIUM_AMETHYST_BUD;
-        boolean isLarge = b == Blocks.LARGE_AMETHYST_BUD;
-        boolean isCluster = b == Blocks.AMETHYST_CLUSTER;
-
-        if (!(isSmall || isMedium || isLarge || isCluster)) return false;
-
-        return switch (filter) {
-            case SMALL_ONLY -> isSmall;
-            case MEDIUM_ONLY -> isMedium;
-            case LARGE_ONLY -> isLarge;
-            case CLUSTER_ONLY -> isCluster;
-            case SMALL_TO_LARGE -> (isSmall || isMedium || isLarge);
-            case LARGE_AND_CLUSTER -> (isLarge || isCluster);
-            case ALL -> true;
-        };
-    }
-
-    private boolean isWithinVanillaReach(BlockPos pos) {
-        return eyeDistanceSqrToCenter(pos) <= (VANILLA_REACH * VANILLA_REACH);
-    }
-
-    private double eyeDistanceSqrToCenter(BlockPos pos) {
-        if (mc.player == null) return Double.MAX_VALUE;
-        Vec3 eye = new Vec3(mc.player.getX(), mc.player.getEyeY(), mc.player.getZ());
-        Vec3 center = Vec3.atCenterOf(pos);
-        return eye.distanceToSqr(center);
-    }
-
-    private Direction getBestDigFace(BlockPos pos, BlockState state) {
-        Direction rayDir = getRaycastFace(pos);
-        if (rayDir != null) return rayDir;
-
-        if (state.getBlock() instanceof AmethystClusterBlock) {
-            return state.getValue(AmethystClusterBlock.FACING);
+    /** @return true if the verification ended; another target may start now. */
+    private boolean finishVerification() {
+        BlockPos finished = miningPos;
+        if (finished == null) {
+            abandonMining(false);
+            return true;
         }
 
-        return getDirectionForBreak(pos);
+        HarvestRules.Verification result = HarvestRules.verification(
+                mc.level.getBlockState(finished).getBlock() != miningBlock,
+                tick - verifyStartTick, VERIFY_TIMEOUT_TICKS);
+        if (result == HarvestRules.Verification.WAITING) return false;
+
+        if (result == HarvestRules.Verification.CONFIRMED) {
+            retries.remove(finished);
+        } else {
+            markFailure(finished);
+        }
+        abandonMining(false);
+        return true;
     }
 
-    private Direction getRaycastFace(BlockPos pos) {
-        if (mc.player == null || mc.level == null) return null;
-
-        Vec3 eye = new Vec3(mc.player.getX(), mc.player.getEyeY(), mc.player.getZ());
-        Vec3 target = Vec3.atCenterOf(pos);
-
-        BlockHitResult hit = mc.level.clip(new ClipContext(
-                eye,
-                target,
-                ClipContext.Block.COLLIDER,
-                ClipContext.Fluid.NONE,
-                mc.player
-        ));
-
-        if (hit.getType() != HitResult.Type.BLOCK) return null;
-        if (!hit.getBlockPos().equals(pos)) return null;
-
-        return hit.getDirection();
+    private void sendDig(ServerboundPlayerActionPacket.Action action, BlockPos pos, Direction face) {
+        if (mc.player == null || mc.player.connection == null || face == null) return;
+        mc.player.connection.send(new ServerboundPlayerActionPacket(action, pos, face));
     }
 
-    private Direction getDirectionForBreak(BlockPos pos) {
-        if (mc.player == null) return Direction.UP;
-
-        Vec3 eye = new Vec3(mc.player.getX(), mc.player.getEyeY(), mc.player.getZ());
-        Vec3 center = Vec3.atCenterOf(pos);
-        Vec3 d = center.subtract(eye);
-
-        double ax = Math.abs(d.x), ay = Math.abs(d.y), az = Math.abs(d.z);
-
-        if (ax >= ay && ax >= az) return d.x > 0 ? Direction.WEST : Direction.EAST;
-        if (ay >= ax && ay >= az) return d.y > 0 ? Direction.DOWN : Direction.UP;
-        return d.z > 0 ? Direction.NORTH : Direction.SOUTH;
+    private void markFailure(BlockPos pos) {
+        Retry old = retries.get(pos);
+        int failures = old == null ? 1 : Math.min(6, old.failures() + 1);
+        int delay = HarvestRules.retryDelayTicks(RETRY_BASE_TICKS, failures);
+        retries.put(pos.immutable(), new Retry(failures, tick + delay, tick));
     }
 
     @Subscribe
     private void onRender3D(EventRender3D event) {
-        if (!renderSettings.getValue()) return;
-        if (mc.player == null || mc.level == null) return;
+        if (!render.getValue() || mc.player == null || mc.level == null || trackedWorld != mc.level) return;
+        IRenderer3D renderer = event.getRenderer();
+        renderer.begin(event.getMatrixStack());
+        renderer.setLineWidth(1.0f);
 
-        IRenderer3D r = event.getRenderer();
-        r.begin(event.getMatrixStack());
-        r.setLineWidth(lineWidth.getValue());
-
-        for (BlockPos budding : buddingCache) {
-            r.drawBox(
-                    budding,
-                    true,
-                    true,
-                    ColorUtils.transparency(buddingColor.getValueRGB(), buddingColor.getAlpha())
-            );
+        for (BlockPos budding : scan.budding()) {
+            renderer.drawBox(budding, true, true,
+                    ColorUtils.transparency(BUDDING_COLOR, 60));
         }
-
-        for (BlockPos target : targets) {
-            r.drawBox(
-                    target,
-                    true,
-                    true,
-                    ColorUtils.transparency(targetColor.getValueRGB(), targetColor.getAlpha())
-            );
+        for (AmethystTargetFinder.Target target : scan.targets()) {
+            renderer.drawBox(target.pos(), true, true,
+                    ColorUtils.transparency(TARGET_COLOR, 80));
         }
-
-        r.end();
-    }
-
-    public enum BreakStage {
-        CLUSTER_ONLY,
-        LARGE_ONLY,
-        MEDIUM_ONLY,
-        SMALL_ONLY,
-        SMALL_TO_LARGE,
-        LARGE_AND_CLUSTER,
-        ALL
+        if (miningPos != null && !verifying) {
+            renderer.drawBox(miningPos, true, true,
+                    ColorUtils.transparency(MINING_COLOR, 90));
+        }
+        renderer.end();
     }
 }
